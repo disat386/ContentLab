@@ -29,8 +29,8 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import WPConnection from './WPConnection';
-import { downloadMarkdown } from '../lib/download';
-import { Copy, Download, Check } from 'lucide-react';
+import { downloadMarkdown, downloadAsTxt, downloadAsDocx, downloadAsHtml } from '../lib/download';
+import { Copy, Download, Check, FileCode, FileType, FileEdit } from 'lucide-react';
 
 interface LibraryItem {
   id: string;
@@ -160,8 +160,10 @@ export default function Library() {
     filter === 'all' || item.type === filter
   );
 
+  const [fullPreviewItem, setFullPreviewItem] = useState<LibraryItem | null>(null);
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 h-full">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 h-full relative">
       {/* Content List */}
       <div className="lg:col-span-8 flex flex-col gap-6">
         <div className="flex items-center justify-between">
@@ -238,8 +240,16 @@ export default function Library() {
               ) : selectedItem ? (
                 <motion.div key="detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
                   <div>
-                    <h4 className="text-lg font-bold mb-2">{selectedItem.title}</h4>
-                    <div className="p-4 bg-white/5 rounded-xl border border-white/5 text-xs text-white/60 whitespace-pre-wrap max-h-64 overflow-y-auto mb-4">
+                    <div className="flex items-center justify-between mb-2">
+                       <h4 className="text-lg font-bold">{selectedItem.title}</h4>
+                       <button 
+                         onClick={() => setFullPreviewItem(selectedItem)}
+                         className="p-2 bg-white/5 border border-white/10 rounded-lg text-[10px] text-white/40 uppercase font-black hover:text-white transition-all"
+                       >
+                          Full Preview
+                       </button>
+                    </div>
+                    <div className="p-4 bg-white/5 rounded-xl border border-white/5 text-xs text-white/60 whitespace-pre-wrap max-h-64 overflow-y-auto mb-4 custom-scrollbar">
                       <ReactMarkdown>{selectedItem.content}</ReactMarkdown>
                     </div>
                   </div>
@@ -277,19 +287,38 @@ export default function Library() {
                     </div>
                   )}
                   
-                  <div className="pt-6 border-t border-white/5 flex gap-2">
-                    <button 
-                      onClick={() => downloadMarkdown(selectedItem.title, selectedItem.content)}
-                      className="btn-outline flex-1 py-2 text-xs flex items-center justify-center gap-2"
-                    >
-                      <Download className="w-4 h-4" /> Download
-                    </button>
-                    <button onClick={handleCopy} className="btn-outline flex-1 py-2 text-xs flex items-center justify-center gap-2">
-                      {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />} {copied ? 'Copied' : 'Copy'}
-                    </button>
-                    <button onClick={() => handleDelete(selectedItem.id)} className="btn-outline flex-1 py-2 text-xs flex items-center justify-center gap-2 text-red-500 border-red-500/20 hover:bg-red-500/10">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                  <div className="pt-6 border-t border-white/5 space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                       <button onClick={handleCopy} className="btn-outline py-2 text-xs flex items-center justify-center gap-2">
+                         {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />} {copied ? 'Copied' : 'Copy Text'}
+                       </button>
+                       <button onClick={() => handleDelete(selectedItem.id)} className="btn-outline py-2 text-xs flex items-center justify-center gap-2 text-red-500 border-red-500/20 hover:bg-red-500/10">
+                         <Trash2 className="w-4 h-4" /> Delete
+                       </button>
+                    </div>
+
+                    <div className="relative group">
+                       <button className="w-full bg-white text-black py-3 rounded-xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-auurio-accent transition-all shadow-xl shadow-orange-500/10">
+                          <Download className="w-4 h-4" /> Export Asset
+                       </button>
+                       <div className="absolute bottom-full left-0 right-0 mb-2 glass bg-black/95 border border-white/10 rounded-2xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all p-2 space-y-1">
+                          {[
+                             { label: 'Markdown', fn: downloadMarkdown, icon: FileCode, ext: 'MD' },
+                             { label: 'Plain Text', fn: downloadAsTxt, icon: FileType, ext: 'TXT' },
+                             { label: 'MS Word', fn: downloadAsDocx, icon: FileEdit, ext: 'DOC' },
+                             { label: 'HTML Page', fn: downloadAsHtml, icon: Globe, ext: 'HTML' }
+                          ].map(opt => (
+                             <button 
+                               key={opt.ext}
+                               onClick={() => opt.fn(selectedItem.title, selectedItem.content)}
+                               className="w-full text-left px-3 py-2 hover:bg-white/5 rounded-lg flex items-center gap-3 transition-colors"
+                             >
+                                <opt.icon className="w-3.5 h-3.5 text-white/40" />
+                                <span className="text-xs font-bold text-white/80">{opt.label}</span>
+                             </button>
+                          ))}
+                       </div>
+                    </div>
                   </div>
                 </motion.div>
               ) : (
@@ -302,6 +331,108 @@ export default function Library() {
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {fullPreviewItem && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-12">
+             <motion.div 
+               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+               onClick={() => setFullPreviewItem(null)}
+               className="absolute inset-0 bg-black/95 backdrop-blur-3xl" 
+             />
+             <motion.div 
+               initial={{ opacity: 0, scale: 0.9, y: 40 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.9, y: 40 }}
+               className="relative w-full max-w-6xl h-full bg-[#050505] border border-white/10 rounded-[3rem] overflow-hidden flex flex-col shadow-[0_0_100px_rgba(0,0,0,0.9)]"
+             >
+                <div className="p-8 border-b border-white/5 flex items-center justify-between bg-white/5">
+                   <div>
+                      <h2 className="text-2xl font-black text-white">{fullPreviewItem.title}</h2>
+                      <p className="text-[10px] text-white/40 uppercase font-bold tracking-[0.4em]">Artifact Registry Output</p>
+                   </div>
+                   <div className="flex items-center gap-4">
+                      <div className="relative group">
+                         <button className="px-6 py-2 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase text-white/60 hover:text-white flex items-center gap-2">
+                            <Download className="w-4 h-4" /> Download
+                         </button>
+                         <div className="absolute right-0 top-full mt-2 w-48 glass bg-black/95 border border-white/10 rounded-2xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all p-2 space-y-1 z-50">
+                            {[
+                               { label: 'Markdown', fn: downloadMarkdown, ext: 'MD' },
+                               { label: 'Plain Text', fn: downloadAsTxt, ext: 'TXT' },
+                               { label: 'MS Word', fn: downloadAsDocx, ext: 'DOC' },
+                               { label: 'HTML Page', fn: downloadAsHtml, ext: 'HTML' }
+                            ].map(opt => (
+                               <button 
+                                 key={opt.ext}
+                                 onClick={() => opt.fn(fullPreviewItem.title, fullPreviewItem.content)}
+                                 className="w-full text-left px-3 py-2.5 hover:bg-white/5 rounded-xl flex items-center gap-3 transition-colors"
+                               >
+                                  <span className="text-xs font-bold text-white/80">{opt.label}</span>
+                               </button>
+                            ))}
+                         </div>
+                      </div>
+                      <button 
+                        onClick={() => setFullPreviewItem(null)}
+                        className="px-6 py-2 bg-white text-black font-black text-[10px] uppercase rounded-xl hover:bg-auurio-accent transition-all"
+                      >
+                         Close
+                      </button>
+                   </div>
+                </div>
+                <div className="flex-1 overflow-y-auto p-12 md:p-24 custom-scrollbar">
+                   <article className="max-w-4xl mx-auto">
+                      {/* Premium Header in Library */}
+                      <div className="mb-24 space-y-8 text-center animate-in fade-in slide-in-from-bottom-8 duration-700">
+                         <div className="flex items-center gap-4">
+                            <span className="h-px flex-1 bg-white/10" />
+                            <span className="text-[10px] font-black uppercase tracking-[0.4em] text-auurio-accent">Archive Registry Entry</span>
+                            <span className="h-px flex-1 bg-white/10" />
+                         </div>
+                         <h1 className="text-5xl md:text-8xl font-black text-white leading-none tracking-tighter uppercase italic">
+                            {fullPreviewItem.title}
+                         </h1>
+                         <div className="flex items-center justify-center gap-8 pt-12 border-t border-white/5">
+                            <div className="text-[10px] uppercase font-black text-white/40 tracking-[0.3em]">Vault ID: {fullPreviewItem.id.substring(0,8).toUpperCase()}</div>
+                            <div className="w-1.5 h-1.5 rounded-full bg-auurio-accent" />
+                            <div className="text-[10px] uppercase font-black text-white/60 tracking-[0.3em]">{fullPreviewItem.type} Article</div>
+                         </div>
+                      </div>
+
+                      <div className="prose prose-invert prose-2xl max-w-none 
+                        prose-p:text-white/70 prose-p:leading-relaxed prose-p:mb-12 prose-font-light prose-p:text-2xl
+                        prose-headings:text-white prose-headings:font-black prose-headings:tracking-tighter 
+                        prose-h2:text-6xl prose-h2:mt-40 prose-h2:mb-16 prose-h2:uppercase prose-h2:pb-8 prose-h2:border-b-4 prose-h2:border-auurio-accent/20
+                        prose-h3:text-4xl prose-h3:mt-24 prose-h3:mb-10
+                        prose-strong:text-white prose-strong:font-black prose-strong:bg-white/5 prose-strong:px-2 prose-strong:rounded
+                        prose-blockquote:border-l-[12px] prose-blockquote:border-auurio-accent prose-blockquote:bg-white/5 prose-blockquote:py-16 prose-blockquote:px-16 prose-blockquote:rounded-r-[4rem] prose-blockquote:italic prose-blockquote:text-white/90 prose-blockquote:text-4xl prose-blockquote:font-black prose-blockquote:tracking-tight prose-blockquote:my-32 prose-blockquote:shadow-2xl
+                        prose-li:text-white/70 prose-li:marker:text-auurio-accent
+                        prose-img:rounded-[4rem] prose-img:border-2 prose-img:border-white/10 shadow-2xl my-32 hover:scale-[1.02] transition-all duration-1000">
+                        <ReactMarkdown
+                          components={{
+                            p: ({ children }) => <div className="mb-12 last:mb-0">{children}</div>,
+                            img: ({ ...props }) => (
+                              <div className="my-32 relative group">
+                                <div className="absolute -inset-8 bg-auurio-accent/20 blur-[100px] opacity-0 group-hover:opacity-40 transition-opacity rounded-[8rem]" />
+                                <img 
+                                  {...props} 
+                                  className="rounded-[4rem] border-2 border-white/10 shadow-2xl relative z-10 w-full object-cover aspect-video" 
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
+                            )
+                          }}
+                        >
+                           {fullPreviewItem.content}
+                        </ReactMarkdown>
+                      </div>
+                   </article>
+                </div>
+             </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -27,6 +27,15 @@ export default function Navbar() {
           </div>
         </div>
 
+        <div className="hidden lg:flex flex-col items-center text-center">
+          <h2 className="text-sm font-black text-white/90 uppercase tracking-widest animate-pulse">
+            This application is still under construction
+          </h2>
+          <p className="text-[10px] font-bold text-white/30 uppercase tracking-tight">
+            You can try if it works, then please share feedback on the <span className="text-auurio-accent">Auurio Hub</span>
+          </p>
+        </div>
+
         <div className="flex items-center gap-4">
           {user ? (
             <>

@@ -5,8 +5,6 @@ import {
   generateFullContent, 
   optimizeSEO,
   generateImagePrompts,
-  summarizeContent,
-  geminiKeyService
 } from '../lib/gemini';
 import { wordPressService, WordPressSite } from '../lib/wordpress';
 import { motion, AnimatePresence } from 'motion/react';
@@ -26,7 +24,6 @@ import {
   Check,
   Zap,
   Calendar,
-  History,
   List,
   Terminal,
   ShoppingCart,
@@ -36,9 +33,9 @@ import {
   Globe,
   Link2
 } from 'lucide-react';
-import { collection, addDoc, serverTimestamp, doc, updateDoc, increment, query, where, onSnapshot, orderBy, Timestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, doc, updateDoc, increment, query, where, onSnapshot } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { downloadMarkdown } from '../lib/download';
+import { downloadMarkdown, downloadAsDocx, downloadAsTxt, downloadAsHtml } from '../lib/download';
 import ReactMarkdown from 'react-markdown';
 
 interface Voice {
@@ -152,12 +149,11 @@ export default function BlogWriter({ initialTopic }: { initialTopic?: string }) 
 
   // Generation State
   const [outline, setOutline] = useState<Outline | null>(null);
+  const [editingOutline, setEditingOutline] = useState<Outline | null>(null);
+  const [isEditingOutline, setIsEditingOutline] = useState(false);
   const [content, setContent] = useState<string | null>(null);
+  const [isEditingContent, setIsEditingContent] = useState(false);
   const [currentDocId, setCurrentDocId] = useState<string | null>(null);
-  const [imagePrompts, setImagePrompts] = useState<string[]>([]);
-  const [generatingPrompts, setGeneratingPrompts] = useState(false);
-  const [summary, setSummary] = useState<string | null>(null);
-  const [summarizing, setSummarizing] = useState(false);
 
   // WordPress State
   const [wpSites, setWpSites] = useState<WordPressSite[]>([]);
@@ -173,9 +169,6 @@ export default function BlogWriter({ initialTopic }: { initialTopic?: string }) 
   }, [user]);
 
   const [scheduledDate, setScheduledDate] = useState('');
-  const [versions, setVersions] = useState<Array<{ id: string; content: string; createdAt: Timestamp | null }>>([]);
-  const [showVersions, setShowVersions] = useState(false);
-  const [enhancing, setEnhancing] = useState<string | null>(null);
 
   // Metadata State
   const [metaTitle, setMetaTitle] = useState('');
@@ -394,59 +387,6 @@ export default function BlogWriter({ initialTopic }: { initialTopic?: string }) 
     }
   };
 
-  const handleGenerateImagePrompts = async () => {
-    if (!content) return;
-    setGeneratingPrompts(true);
-    try {
-      const prompts = await generateImagePrompts(content);
-      setImagePrompts(prompts);
-    } catch (err) {
-      console.error(err);
-      setError('Failed to generate image prompts.');
-    } finally {
-      setGeneratingPrompts(false);
-    }
-  };
-
-  const handleGenerateSummary = async () => {
-    if (!content) return;
-    setSummarizing(true);
-    try {
-      const res = await summarizeContent(content);
-      setSummary(res);
-    } catch (err) {
-      console.error(err);
-      setError('Failed to generate summary.');
-    } finally {
-      setSummarizing(false);
-    }
-  };
-
-  const handleCreateVersion = async () => {
-    if (!currentDocId || !content) return;
-    try {
-      await addDoc(collection(db, `library/${currentDocId}/versions`), {
-        content,
-        createdAt: serverTimestamp()
-      });
-      fetchVersions();
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchVersions = async () => {
-    if (!currentDocId) return;
-    const q = query(collection(db, `library/${currentDocId}/versions`), orderBy('createdAt', 'desc'));
-    onSnapshot(q, (snap) => {
-      setVersions(snap.docs.map(d => ({ id: d.id, ...d.data() } as { id: string; content: string; createdAt: Timestamp | null })));
-    });
-  };
-
-  useEffect(() => {
-    if (currentDocId) fetchVersions();
-  }, [currentDocId]);
-
   const handleScheduleToggle = async () => {
     if (!currentDocId || !scheduledDate) return;
     setSaveStatus('saving');
@@ -517,33 +457,20 @@ export default function BlogWriter({ initialTopic }: { initialTopic?: string }) 
     }
   };
 
-  const handleEnhance = async (type: 'faq' | 'humanize' | 'social') => {
-    if (!content) return;
-    setEnhancing(type);
+  const handleUpdateContent = async () => {
+    if (!currentDocId || !content) return;
+    setSaveStatus('saving');
     try {
-      let prompt = '';
-      if (type === 'faq') prompt = `Based on this article, generate a 3-question FAQ section with expert answers. Use Markdown. Article: ${content.substring(0, 3000)}`;
-      if (type === 'humanize') prompt = `Rewrite this article to be more engaging, have a stronger personal voice, and sound less like a generic AI. Article: ${content.substring(0, 3000)}`;
-      if (type === 'social') prompt = `Generate 3 high-impact hooks for Twitter and 1 for LinkedIn based on this article. Article: ${content.substring(0, 2000)}`;
-
-      const res = await geminiKeyService.execute(async (ai) => {
-        const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        });
-        return response.text || '';
-      }, "Enhancement");
-
-      if (type === 'social') {
-        setSummary(res); // Show in the summary slot
-        alert('Social Hooks generated! Check the summary section below.');
-      } else {
-        setContent(prev => prev + '\n\n' + res);
-      }
-    } catch {
-      setError('Enhancement failed. Please try again.');
-    } finally {
-      setEnhancing(null);
+      await updateDoc(doc(db, 'library', currentDocId), {
+        content,
+        updatedAt: serverTimestamp()
+      });
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 2000);
+      setIsEditingContent(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `library/${currentDocId}`);
+      setSaveStatus(null);
     }
   };
 
@@ -862,247 +789,358 @@ export default function BlogWriter({ initialTopic }: { initialTopic?: string }) 
                       <Layout className="w-6 h-6 text-auurio-accent" />
                       Smart Outline Review
                     </h3>
-                    <button onClick={() => setStep(1)} className="text-xs hover:text-auurio-accent underline font-bold uppercase tracking-widest">Edit Inputs</button>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="p-6 glass bg-white/5 rounded-2xl border-white/10">
-                      <h4 className="text-xl font-bold text-white mb-4 line-clamp-1">{outline.Title}</h4>
-                      {outline.Headings?.map((h: { title?: string; description?: string } | string, i: number) => (
-                        <div key={i} className="mb-4 pl-4 border-l-2 border-auurio-accent/20">
-                          <p className="text-sm font-bold text-white/90">
-                            {typeof h === 'string' ? h : h.title || 'Section'}
-                          </p>
-                          <p className="text-xs text-white/40 mt-1">
-                            {typeof h === 'string' ? 'Section description' : h.description || 'Section description'}
-                          </p>
-                        </div>
-                      ))}
+                    <div className="flex items-center gap-4">
+                       {!isEditingOutline ? (
+                         <button 
+                            onClick={() => {
+                               setEditingOutline(JSON.parse(JSON.stringify(outline)));
+                               setIsEditingOutline(true);
+                            }}
+                            className="text-xs font-black uppercase tracking-widest text-auurio-accent hover:underline"
+                         >
+                            Edit Outline
+                         </button>
+                       ) : (
+                         <button 
+                            onClick={() => {
+                               setOutline(editingOutline);
+                               setIsEditingOutline(false);
+                            }}
+                            className="bg-auurio-accent text-black px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest hover:scale-105 transition-transform"
+                         >
+                            Save Changes
+                         </button>
+                       )}
+                       <button onClick={() => setStep(1)} className="text-xs hover:text-auurio-accent underline font-bold uppercase tracking-widest text-white/40">Edit Inputs</button>
                     </div>
                   </div>
+                  <div className="space-y-4">
+                    <div className="p-6 glass bg-white/5 rounded-2xl border border-white/10">
+                      {isEditingOutline ? (
+                        <div className="space-y-6">
+                           <div className="space-y-1.5">
+                              <label className="text-[10px] uppercase font-black text-white/30">Main Title</label>
+                              <input 
+                                 type="text"
+                                 value={editingOutline?.Title}
+                                 onChange={e => setEditingOutline(prev => prev ? { ...prev, Title: e.target.value } : null)}
+                                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-xl font-bold focus:border-auurio-accent outline-none"
+                              />
+                           </div>
+                           <div className="space-y-4">
+                              <label className="text-[10px] uppercase font-black text-white/30">Structure Components</label>
+                              {editingOutline?.Headings.map((h, i) => (
+                                 <div key={i} className="space-y-2 p-4 bg-black/20 rounded-xl border border-white/5">
+                                    <input 
+                                       type="text"
+                                       value={typeof h === 'string' ? h : h.title}
+                                       onChange={e => {
+                                          const newHeadings = [...editingOutline.Headings];
+                                          if (typeof h === 'string') newHeadings[i] = e.target.value;
+                                          else newHeadings[i] = { ...h, title: e.target.value };
+                                          setEditingOutline({ ...editingOutline, Headings: newHeadings });
+                                       }}
+                                       className="w-full bg-transparent border-b border-white/10 pb-1 text-sm font-bold text-white focus:border-auurio-accent outline-none"
+                                    />
+                                    <textarea 
+                                       value={typeof h === 'string' ? '' : h.description}
+                                       onChange={e => {
+                                          const newHeadings = [...editingOutline.Headings];
+                                          const desc = e.target.value;
+                                          if (typeof h === 'string') newHeadings[i] = { title: h, description: desc };
+                                          else newHeadings[i] = { ...h, description: desc };
+                                          setEditingOutline({ ...editingOutline, Headings: newHeadings });
+                                       }}
+                                       placeholder="Section description/instructions..."
+                                       rows={2}
+                                       className="w-full bg-transparent text-xs text-white/40 focus:text-white/60 outline-none resize-none"
+                                    />
+                                 </div>
+                              ))}
+                           </div>
+                        </div>
+                      ) : (
+                        <>
+                          <h4 className="text-xl font-bold text-white mb-6 bg-white/5 p-4 rounded-xl border border-white/10">{outline.Title}</h4>
+                          <div className="space-y-6">
+                            {outline.Headings?.map((h: { title?: string; description?: string } | string, i: number) => (
+                              <div key={i} className="relative pl-10">
+                                <div className="absolute left-0 top-0 w-6 h-6 rounded-full bg-auurio-accent/10 border border-auurio-accent/20 flex items-center justify-center text-[10px] font-black text-auurio-accent">
+                                   {i + 1}
+                                </div>
+                                <p className="text-base font-bold text-white/90">
+                                  {typeof h === 'string' ? h : h.title || 'Section'}
+                                </p>
+                                <p className="text-sm text-white/40 mt-2 leading-relaxed">
+                                  {typeof h === 'string' ? 'Section description' : h.description || 'Section description'}
+                                </p>
+                                {i < (outline.Headings?.length || 0) - 1 && (
+                                   <div className="absolute left-3 top-6 bottom-[-24px] w-px bg-white/5" />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {!isEditingOutline && (
+                     <motion.div initial={{ opacity: 20, y: 20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between pt-8 border-t border-white/5">
+                        <div className="flex items-center gap-8">
+                           <div className="flex items-center gap-3">
+                              <div className="text-xs font-bold text-white/60">Include AI Assets</div>
+                              <button 
+                                 onClick={() => setIncludeImages(!includeImages)}
+                                 className={`w-10 h-5 rounded-full transition-all relative ${includeImages ? 'bg-auurio-accent' : 'bg-white/10'}`}
+                              >
+                                 <motion.div 
+                                    animate={{ x: includeImages ? 20 : 0 }}
+                                    className="absolute top-1 left-1 w-3 h-3 bg-white rounded-full shadow-sm" 
+                                 />
+                              </button>
+                           </div>
+                           
+                           {includeImages && (
+                             <div className="flex items-center gap-4 border-l border-white/10 pl-8">
+                                <span className="text-[10px] uppercase font-black text-white/30">Quantity</span>
+                                <div className="flex items-center gap-2">
+                                   {[2, 3, 5, 8].map(c => (
+                                     <button 
+                                       key={c}
+                                       onClick={() => setImageCount(c)}
+                                       className={`w-8 h-8 rounded-xl text-[10px] font-black transition-all border ${imageCount === c ? 'bg-auurio-accent border-auurio-accent text-black' : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}`}
+                                     >
+                                       {c}
+                                     </button>
+                                   ))}
+                                </div>
+                             </div>
+                           )}
+                        </div>
+
+                        <button
+                          onClick={handleGenerateContent}
+                          className="bg-auurio-accent text-black px-12 py-5 rounded-[2rem] font-black uppercase tracking-widest text-xs hover:scale-105 transition-all shadow-[0_20px_50px_rgba(255,165,0,0.2)] flex items-center gap-3 group"
+                        >
+                          <Zap className="w-5 h-5 group-hover:animate-pulse" />
+                          Construct Final Content
+                        </button>
+                     </motion.div>
+                  )}
                 </motion.div>
               )}
 
               {step === 3 && content && (
-                <motion.div key="step3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-12 prose prose-invert prose-orange max-w-none">
-                  <div className="flex justify-end gap-2 mb-8 no-prose">
-                    <button 
-                      onClick={() => content && downloadMarkdown(topic, content)}
-                      className="btn-outline flex items-center gap-2 py-2 px-4 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white"
-                    >
-                      <Download className="w-4 h-4" /> Download
-                    </button>
-                    <button onClick={handleCopy} className="btn-outline flex items-center gap-2 py-2 px-4 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white">
-                      <Copy className="w-4 h-4" /> Copy Full
-                    </button>
-                    <button 
-                      onClick={handleGenerateImagePrompts} 
-                      disabled={generatingPrompts}
-                      className="btn-outline flex items-center gap-2 py-2 px-4 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white group"
-                    >
-                      <ImageIcon className={`w-4 h-4 transition-colors ${generatingPrompts ? 'animate-pulse text-auurio-accent' : 'group-hover:text-auurio-accent'}`} /> 
-                      {generatingPrompts ? 'Designing...' : 'Magic Prompts'}
-                    </button>
-                    <button 
-                      onClick={handleGenerateSummary} 
-                      disabled={summarizing}
-                      className="btn-outline flex items-center gap-2 py-2 px-4 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white group"
-                    >
-                      <Zap className={`w-4 h-4 transition-colors ${summarizing ? 'animate-pulse text-auurio-yellow' : 'group-hover:text-auurio-yellow'}`} /> 
-                      {summarizing ? 'Summarizing...' : 'Summarize'}
-                    </button>
-                    <button 
-                      onClick={() => setShowVersions(!showVersions)} 
-                      className="btn-outline flex items-center gap-2 py-2 px-4 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white group"
-                    >
-                      <History className="w-4 h-4 group-hover:text-auurio-accent" /> 
-                      History
-                    </button>
-                    <button onClick={() => setStep(2)} className="btn-outline flex items-center gap-2 py-2 px-4 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white">
-                      <Plus className="w-4 h-4" /> New Version
-                    </button>
-                  </div>
-
-                  {/* Quick Enhancers Bar */}
-                  <div className="mb-12 flex flex-wrap gap-3 no-prose">
-                     {[
-                        { id: 'faq', label: 'Add FAQ', icon: List, color: 'text-blue-400' },
-                        { id: 'humanize', label: 'Humanize AI', icon: Sparkles, color: 'text-auurio-accent' },
-                        { id: 'social', label: 'Social hooks', icon: Globe, color: 'text-green-400' }
-                     ].map(enh => (
-                        <button
-                           key={enh.id}
-                           disabled={!!enhancing}
-                           onClick={() => handleEnhance(enh.id as 'faq' | 'humanize' | 'social')}
-                           className={`flex items-center gap-2 py-2 px-4 rounded-xl bg-white/5 border border-white/10 text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all ${enhancing === enh.id ? 'animate-pulse opacity-50' : ''}`}
-                        >
-                           <enh.icon className={`w-3 h-3 ${enh.color}`} />
-                           {enhancing === enh.id ? 'Processing...' : enh.label}
-                        </button>
-                     ))}
-                  </div>
-
-                  {showVersions && versions.length > 0 && (
-                    <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="mb-8 p-6 bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-                      <h4 className="text-[10px] uppercase font-black text-white/40 mb-4 flex items-center gap-2">
-                        <History className="w-3 h-3" /> Content Revisions
-                      </h4>
-                      <div className="space-y-2">
-                        {versions.map((v, i) => (
-                          <div key={v.id} className="flex items-center justify-between p-3 bg-black/20 rounded-xl border border-white/5 hover:border-white/20 transition-all">
-                            <div className="flex items-center gap-3">
-                              <span className="text-[10px] font-mono text-white/20">V{versions.length - i}</span>
-                              <span className="text-xs text-white/60">{v.createdAt?.toDate?.()?.toLocaleString() || 'Just now'}</span>
+                <motion.div key="step3" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col min-h-full relative overflow-hidden">
+                  {/* Floating Inspector Sidebar (Desktop) */}
+                  <div className="absolute right-8 top-32 bottom-8 w-80 hidden xl:flex flex-col gap-6 z-30">
+                     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="glass-card p-6 border-auurio-accent/20 bg-auurio-accent/5">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-white/40 mb-6 flex items-center gap-2">
+                           <Zap className="w-3 h-3 text-auurio-accent" /> Intelligence Report
+                        </h4>
+                        <div className="space-y-6">
+                           <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-white/60">Semantic Authority</span>
+                              <span className="text-sm font-black text-white">96%</span>
+                           </div>
+                           <div className="flex items-center justify-between">
+                               <span className="text-xs font-bold text-white/60">Readability</span>
+                               <span className="text-sm font-black text-auurio-accent">Pro</span>
                             </div>
-                            <button 
-                              onClick={() => {
-                                handleCreateVersion(); // Store current before reverting
-                                setContent(v.content);
-                                setShowVersions(false);
-                              }}
-                              className="text-[10px] font-black uppercase text-auurio-accent hover:underline"
-                            >
-                              Restore
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-
-                  {/* Reading Progress Indicator */}
-                  <motion.div 
-                    className="fixed top-0 left-0 right-0 h-1 bg-auurio-accent origin-left z-50"
-                    style={{ scaleX: 0 }} // Simple implementation as we are in a scrollable div
-                  />
-
-                  {/* Article Visualization Header */}
-                  <div className="mb-16 space-y-6 relative">
-                    <div className="absolute -left-12 top-0 bottom-0 w-px bg-gradient-to-b from-auurio-accent via-white/5 to-transparent hidden lg:block" />
-                    
-                    <div className="flex items-center gap-3">
-                      <div className="py-1 px-3 rounded-full bg-auurio-accent/10 border border-auurio-accent/20 text-[9px] uppercase font-black tracking-widest text-auurio-accent animate-pulse">
-                         Verified Authority Pillar
-                      </div>
-                      <div className="h-px flex-1 bg-white/5" />
-                    </div>
-
-                    <h1 className="text-4xl md:text-7xl font-black text-white leading-[1] tracking-tight max-w-4xl">
-                      {topic}
-                    </h1>
-                    
-                    <div className="flex flex-wrap items-center gap-x-8 gap-y-4 pt-4 border-t border-white/5">
-                       <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-auurio-accent to-auurio-yellow flex items-center justify-center text-black font-black text-xs">
-                             AI
-                          </div>
-                          <div>
-                             <div className="text-[10px] font-black text-white uppercase tracking-tighter">Generated by AI Studio</div>
-                             <div className="text-[9px] text-white/30 font-bold uppercase">{new Date().toLocaleDateString()}</div>
-                          </div>
-                       </div>
-                       <div className="flex items-center gap-6 text-[10px] uppercase font-bold text-white/40 tracking-widest bg-white/5 py-2 px-4 rounded-full border border-white/10">
-                          <div className="flex items-center gap-2">
-                             <BookOpen className="w-3.5 h-3.5 text-auurio-accent" /> {Math.ceil(content.split(/\s+/).length / 200)} MIN READ
-                          </div>
-                          <div className="flex items-center gap-2">
-                             <Zap className="w-3.5 h-3.5 text-auurio-yellow" /> AUTHORITY SCORE: 9.8
-                          </div>
-                       </div>
-                    </div>
-                  </div>
-
-                  <div className="prose prose-invert max-w-none 
-                    prose-p:text-white/80 prose-p:text-xl prose-p:leading-relaxed prose-p:mb-8
-                    prose-headings:text-white prose-headings:font-black prose-headings:tracking-tight 
-                    prose-h2:text-4xl prose-h2:mt-20 prose-h2:mb-10 prose-h2:pb-4 prose-h2:border-b prose-h2:border-white/5
-                    prose-h3:text-2xl prose-h3:mt-12 prose-h3:mb-6
-                    prose-strong:text-auurio-accent prose-strong:font-black
-                    prose-blockquote:border-l-4 prose-blockquote:border-auurio-accent prose-blockquote:bg-white/5 prose-blockquote:py-8 prose-blockquote:px-10 prose-blockquote:rounded-r-3xl prose-blockquote:italic prose-blockquote:text-white/90 prose-blockquote:text-2xl
-                    prose-li:text-white/80 prose-li:text-lg prose-li:marker:text-auurio-accent
-                    prose-img:rounded-[3rem] prose-img:border prose-img:border-white/10 prose-img:shadow-[0_0_80px_rgba(0,0,0,0.5)]">
-                    <ReactMarkdown
-                      components={{
-                        img: ({ ...props }) => (
-                          <img 
-                            {...props} 
-                            className="rounded-3xl border border-white/10 shadow-2xl my-12 w-full object-cover aspect-video hover:scale-[1.01] transition-transform duration-500" 
-                            referrerPolicy="no-referrer"
-                            loading="lazy"
-                          />
-                        )
-                      }}
-                    >
-                      {content}
-                    </ReactMarkdown>
-                  </div>
-
-                  {/* Content Metrics Widget */}
-                  <div className="mt-12 p-6 rounded-3xl bg-white/5 border border-white/10 grid grid-cols-2 md:grid-cols-4 gap-6 no-prose">
-                     <div className="space-y-1">
-                        <div className="text-[10px] uppercase font-black text-white/20">Word Count</div>
-                        <div className="text-xl font-black">{content.split(/\s+/).length}</div>
-                     </div>
-                     <div className="space-y-1">
-                        <div className="text-[10px] uppercase font-black text-white/20">Read Time</div>
-                        <div className="text-xl font-black">{Math.ceil(content.split(/\s+/).length / 200)} min</div>
-                     </div>
-                     <div className="space-y-1">
-                        <div className="text-[10px] uppercase font-black text-white/20">Image Assets</div>
-                        <div className="text-xl font-black text-auurio-accent">{content.match(/!\[.*?\]\(.*?\)/g)?.length || 0}</div>
-                     </div>
-                     <div className="space-y-1">
-                        <div className="text-[10px] uppercase font-black text-white/20">Auurio Score</div>
-                        <div className="text-xl font-black text-auurio-yellow">9.4/10</div>
-                     </div>
-                  </div>
-
-                  {summary && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: 20 }} 
-                      animate={{ opacity: 1, y: 0 }} 
-                      className="mt-12 p-8 border-l-4 border-auurio-yellow bg-auurio-yellow/5 rounded-r-3xl"
-                    >
-                      <h4 className="text-sm font-black uppercase tracking-widest text-auurio-yellow mb-4 italic">The Big Takeaways</h4>
-                      <div className="prose prose-invert prose-sm prose-p:text-white/60">
-                        <ReactMarkdown>{summary}</ReactMarkdown>
-                      </div>
-                    </motion.div>
-                  )}
-
-                   {imagePrompts.length > 0 && (
-                     <motion.div 
-                       initial={{ opacity: 0, y: 20 }} 
-                       animate={{ opacity: 1, y: 0 }} 
-                       className="mt-12 p-8 glass bg-auurio-accent/5 border-auurio-accent/20 rounded-3xl"
-                     >
-                        <div className="flex items-center gap-3 mb-6">
-                           <div className="p-2 bg-auurio-accent/20 rounded-lg">
-                             <ImageIcon className="w-5 h-5 text-auurio-accent" />
-                           </div>
-                           <div>
-                              <h4 className="text-lg font-black uppercase text-white">Visual Storytelling</h4>
-                              <p className="text-[10px] text-white/40 uppercase tracking-widest font-bold">Generated Image Prompts for Midjourney / DALL-E</p>
-                           </div>
+                            <div className="space-y-2">
+                               <div className="flex items-center justify-between text-[9px] font-black uppercase text-white/20">Keyword Distribution</div>
+                               <div className="flex flex-wrap gap-1">
+                                  {topic.split(' ').slice(0, 3).map(kw => (
+                                     <span key={kw} className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[9px] text-white/40 font-black">{kw}</span>
+                                  ))}
+                               </div>
+                            </div>
                         </div>
+                     </motion.div>
+
+                     <motion.div initial={{ x: 50, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ delay: 0.1 }} className="glass-card p-6">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-white/40 mb-6">Distribution Readiness</h4>
                         <div className="space-y-4">
-                           {imagePrompts.map((prompt, i) => (
-                             <div key={i} className="group relative p-4 bg-black/20 border border-white/5 rounded-xl hover:border-auurio-accent/30 transition-all">
-                                <p className="text-sm text-white/70 italic leading-relaxed pr-8">"{prompt}"</p>
-                                <button 
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(prompt);
-                                    alert('Prompt copied!');
-                                  }}
-                                  className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity hover:text-auurio-accent"
-                                >
-                                  <Copy className="w-4 h-4" />
-                                </button>
-                             </div>
+                           {[
+                              { label: 'LinkedIn Hook', status: true },
+                              { label: 'Twitter Thread', status: true },
+                              { label: 'WP Schema', status: false },
+                              { label: 'OG Graph', status: true }
+                           ].map(item => (
+                              <div key={item.label} className="flex items-center justify-between">
+                                 <span className="text-[10px] font-bold text-white/40 uppercase">{item.label}</span>
+                                 {item.status ? <Check className="w-3 h-3 text-green-500" /> : <div className="w-1.5 h-1.5 rounded-full bg-white/10" />}
+                              </div>
                            ))}
                         </div>
-                        <p className="text-[9px] text-white/20 mt-6 text-center italic">Use these prompts in Midjourney or Auurio Canvas to create original article graphics.</p>
                      </motion.div>
-                   )}
+                  </div>
+                  <div className="sticky top-0 z-40 flex flex-wrap items-center justify-between gap-4 p-6 bg-black/80 backdrop-blur-3xl border-b border-white/5 no-prose">
+                    <div className="flex items-center gap-3">
+                       <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                       <span className="text-[10px] font-black uppercase tracking-widest text-white/40">Editorial Hub</span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="relative group">
+                        <button 
+                          className="px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-white/60 hover:text-white flex items-center gap-2 transition-all"
+                        >
+                          <Download className="w-3.5 h-3.5" /> Download
+                        </button>
+                        <div className="absolute right-0 top-full mt-2 w-48 glass bg-black/95 border border-white/10 rounded-2xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all p-2 space-y-1 z-50">
+                          <button onClick={() => downloadMarkdown(topic, content)} className="w-full text-left px-3 py-2.5 hover:bg-white/5 rounded-xl flex items-center gap-3 transition-colors">
+                            <div className="w-7 h-7 rounded-lg bg-orange-500/10 flex items-center justify-center text-orange-500 font-black text-[9px]">MD</div>
+                            <span className="text-xs font-bold text-white/80">Markdown</span>
+                          </button>
+                          <button onClick={() => downloadAsTxt(topic, content)} className="w-full text-left px-3 py-2.5 hover:bg-white/5 rounded-xl flex items-center gap-3 transition-colors">
+                            <div className="w-7 h-7 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-500 font-black text-[9px]">TXT</div>
+                            <span className="text-xs font-bold text-white/80">Plain Text</span>
+                          </button>
+                          <button onClick={() => downloadAsDocx(topic, content)} className="w-full text-left px-3 py-2.5 hover:bg-white/5 rounded-xl flex items-center gap-3 transition-colors">
+                            <div className="w-7 h-7 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-500 font-black text-[9px]">DOC</div>
+                            <span className="text-xs font-bold text-white/80">MS Word</span>
+                          </button>
+                          <button onClick={() => downloadAsHtml(topic, content)} className="w-full text-left px-3 py-2.5 hover:bg-white/5 rounded-xl flex items-center gap-3 transition-colors">
+                            <div className="w-7 h-7 rounded-lg bg-green-500/10 flex items-center justify-center text-green-500 font-black text-[9px]">HTM</div>
+                            <span className="text-xs font-bold text-white/80">HTML Page</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => setIsEditingContent(!isEditingContent)} 
+                        className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border ${isEditingContent ? 'bg-auurio-accent border-auurio-accent text-black' : 'bg-white/5 border-white/10 text-white/60 hover:text-white'}`}
+                      >
+                        {isEditingContent ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                        {isEditingContent ? 'Preview Mode' : 'Edit Article'}
+                      </button>
+
+                      {isEditingContent ? (
+                        <button 
+                          onClick={handleUpdateContent}
+                          disabled={saveStatus === 'saving'}
+                          className="px-6 py-2 bg-white text-black rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-auurio-accent transition-all flex items-center gap-2"
+                        >
+                          {saveStatus === 'saving' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                          Save Changes
+                        </button>
+                      ) : (
+                        <button onClick={handleCopy} className="px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-white/60 hover:text-white flex items-center gap-2">
+                          <Copy className="w-3.5 h-3.5" /> Copy
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 p-6 md:p-12 lg:p-24 bg-[#0a0a0a]">
+                     {isEditingContent ? (
+                       <div className="max-w-5xl mx-auto space-y-6">
+                          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 text-[10px] font-black uppercase tracking-widest text-white/40 mb-4">
+                             Markdown Editor: Use standard syntax for headings, links, and formatting.
+                          </div>
+                          <textarea 
+                            value={content}
+                            onChange={(e) => setContent(e.target.value)}
+                            rows={40}
+                            className="w-full bg-black/40 border border-white/10 rounded-3xl p-8 text-lg font-medium leading-relaxed text-white/80 focus:border-auurio-accent outline-none shadow-2xl transition-all"
+                            spellCheck="false"
+                          />
+                       </div>
+                     ) : (
+                       <div className="max-w-4xl mx-auto">
+                          {/* Premium Article Header */}
+                          <div className="mb-24 space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-700">
+                             <div className="flex items-center gap-4">
+                                <span className="h-px flex-1 bg-white/10" />
+                                <span className="text-[10px] font-black uppercase tracking-[0.4em] text-auurio-accent">Digital Artifact</span>
+                                <span className="h-px flex-1 bg-white/10" />
+                             </div>
+                             
+                             <h1 className="text-5xl md:text-8xl font-black text-white leading-[0.95] tracking-tighter text-center">
+                                {topic}
+                             </h1>
+
+                             {subheading && (
+                                <p className="text-xl md:text-2xl text-white/40 font-medium text-center max-w-2xl mx-auto italic leading-normal">
+                                   {subheading}
+                                </p>
+                             )}
+
+                             <div className="flex flex-wrap items-center justify-center gap-8 pt-12 border-t border-white/5">
+                                <div className="flex items-center gap-3">
+                                   <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-auurio-accent to-auurio-yellow flex items-center justify-center text-black font-black text-xs">AI</div>
+                                   <div className="text-left">
+                                      <div className="text-[10px] font-black text-white uppercase tracking-tighter">Authored by Auurio CI</div>
+                                      <div className="text-[9px] text-white/30 font-bold uppercase">{new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+                                   </div>
+                                </div>
+                                <div className="flex items-center gap-6 text-[10px] uppercase font-black text-white/40 tracking-[0.2em] bg-white/5 py-3 px-6 rounded-full border border-white/10">
+                                   <div className="flex items-center gap-2">
+                                      <BookOpen className="w-3.5 h-3.5 text-auurio-accent" /> {Math.ceil(content.split(/\s+/).length / 200)} MIN READ
+                                   </div>
+                                </div>
+                             </div>
+                          </div>
+
+                          <div className="prose prose-invert prose-2xl max-w-none 
+                            prose-p:text-white/70 prose-p:leading-relaxed prose-p:mb-12 prose-p:font-light prose-p:text-2xl
+                            prose-headings:text-white prose-headings:font-black prose-headings:tracking-tighter 
+                            prose-h2:text-6xl prose-h2:mt-40 prose-h2:mb-16 prose-h2:pb-8 prose-h2:border-b-4 prose-h2:border-auurio-accent/20 prose-h2:uppercase
+                            prose-h3:text-4xl prose-h3:mt-24 prose-h3:mb-10 prose-h3:text-white/90
+                            prose-strong:text-white prose-strong:font-black prose-strong:bg-white/5 prose-strong:px-2 prose-strong:rounded
+                            prose-blockquote:border-l-[12px] prose-blockquote:border-auurio-accent prose-blockquote:bg-white/5 prose-blockquote:py-16 prose-blockquote:px-16 prose-blockquote:rounded-r-[4rem] prose-blockquote:italic prose-blockquote:text-white/90 prose-blockquote:text-4xl prose-blockquote:font-black prose-blockquote:tracking-tight prose-blockquote:my-32 prose-blockquote:shadow-2xl
+                            prose-li:text-white/70 prose-li:text-2xl prose-li:mb-6 prose-li:marker:text-auurio-accent prose-li:marker:font-black
+                            prose-img:rounded-[4rem] prose-img:border-2 prose-img:border-white/10 prose-img:shadow-[0_60px_150px_rgba(0,0,0,0.9)] prose-img:my-32 prose-img:hover:scale-[1.03] prose-img:transition-all prose-img:duration-1000
+                            prose-a:text-auurio-accent prose-a:font-black prose-a:underline prose-a:underline-offset-8 hover:prose-a:text-white transition-all">
+                            <ReactMarkdown
+                              components={{
+                                p: ({ children }) => <div className="mb-12 last:mb-0">{children}</div>,
+                                img: ({ ...props }) => (
+                                  <div className="my-32 relative group">
+                                    <div className="absolute -inset-8 bg-auurio-accent/20 blur-[100px] opacity-0 group-hover:opacity-40 transition-opacity rounded-[8rem]" />
+                                    <img 
+                                      {...props} 
+                                      className="rounded-[4rem] border-2 border-white/10 shadow-2xl relative z-10 w-full object-cover aspect-video hover:scale-[1.02] transition-all duration-700 cursor-zoom-in" 
+                                      referrerPolicy="no-referrer"
+                                      loading="lazy"
+                                    />
+                                    {props.alt && (
+                                      <div className="mt-8 text-center text-[10px] uppercase font-black tracking-[0.4em] text-white/20 italic">
+                                        &mdash; ARCHIVE: {props.alt} &mdash;
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              }}
+                            >
+                              {content}
+                            </ReactMarkdown>
+                          </div>
+                          
+                          {/* Metrics Footer */}
+                          <div className="mt-40 pt-12 border-t border-white/5 grid grid-cols-2 md:grid-cols-4 gap-12 no-prose">
+                             <div className="space-y-2">
+                                <div className="text-[10px] uppercase font-black text-white/20 tracking-widest">Metadata Yield</div>
+                                <div className="text-3xl font-black text-white">{content.split(/\s+/).length} <span className="text-xs text-white/40">WORDS</span></div>
+                             </div>
+                             <div className="space-y-2">
+                                <div className="text-[10px] uppercase font-black text-white/20 tracking-widest">Editorial Pass</div>
+                                <div className="text-3xl font-black text-auurio-accent">SUCCESS</div>
+                             </div>
+                             <div className="space-y-2">
+                                <div className="text-[10px] uppercase font-black text-white/20 tracking-widest">Visual Assets</div>
+                                <div className="text-3xl font-black text-white/80">{(content.match(/!\[.*?\]\(.*?\)/g) || []).length} UNITS</div>
+                             </div>
+                             <div className="space-y-2">
+                                <div className="text-[10px] uppercase font-black text-white/20 tracking-widest">Integrity Hash</div>
+                                <div className="text-3xl font-black text-auurio-yellow">98.4%</div>
+                             </div>
+                          </div>
+                       </div>
+                     )}
+                  </div>
                 </motion.div>
               )}
 

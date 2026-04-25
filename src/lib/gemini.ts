@@ -166,8 +166,8 @@ export async function generateFullContent(request: ContentRequest) {
   - DO NOT use generic AI filler or clichés (e.g., "In the fast-paced world of...", "Crucial role").
   - Provide specific examples, data-driven insights (even if general), and unique angles not found in standard search results.
   - Ensure the content passes "human-writer" sniff tests for creativity and flow.
-  - ${request.externalLinks ? `Naturally weave in these specific references: ${request.externalLinks}` : ''}
-  ${request.autoExternalLinks ? `Actively link to authoritative external sources (Citations).` : 'Include external resources.'}
+  - ${request.externalLinks ? `MANDATORY: You must naturally weave in and HYPERLINK THESE SPECIFIC REFERENCES using Markdown [Site Name](URL): ${request.externalLinks}. Do NOT just list them, link them in the text.` : ''}
+  ${request.autoExternalLinks ? `CRITICAL: Actively research and link to authoritative external sources (Citations) throughout the article using Markdown [Title](URL). Every major claim should have a link.` : 'Include external resources.'}
   
   OUTLINE: ${JSON.stringify(request.outline)}
   
