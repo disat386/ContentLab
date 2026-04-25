@@ -1,0 +1,152 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && (request.auth.uid == userId || request.auth.token.email == userId);
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Helpers ---
+
+    function isValidUser(data) {
+      return (data.uid == request.auth.uid || data.email == request.auth.token.email)
+          && data.email is string && data.email.size() <= 256
+          && data.displayName is string && data.displayName.size() <= 128
+          && data.credits is int && data.credits >= 0;
+    }
+
+    function isValidBrandVoice(data) {
+      return isOwner(data.userId)
+          && data.name is string && data.name.size() <= 128
+          && data.tone is string && data.tone.size() <= 64
+          && data.audience is string && data.audience.size() <= 128
+          && data.style is string && data.style.size() <= 1024
+          && data.createdAt == request.time;
+    }
+
+    function isValidBlog(data) {
+      return isOwner(data.userId)
+          && data.title is string && data.title.size() <= 512
+          && data.content is string && data.content.size() <= 50000
+          && data.createdAt == request.time;
+    }
+
+    // --- Collections ---
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || request.auth.token.email == userId);
+      allow create: if isVerified() && (request.auth.uid == userId || request.auth.token.email == userId) 
+                     && incoming().keys().hasAll(['uid', 'email', 'credits'])
+                     && incoming().keys().size() >= 3;
+      
+      allow update: if isVerified() && (request.auth.uid == userId || request.auth.token.email == userId)
+                     && (
+                       (incoming().credits == existing().credits - 1 
+                        && incoming().diff(existing()).affectedKeys().hasOnly(['credits']))
+                       ||
+                       (incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'activeChannel']))
+                     );
+    }
+
+    match /library/{contentId} {
+      allow listArray: if isSignedIn() && resource.data.userId == request.auth.token.email;
+      allow list: if isSignedIn() && isOwner(resource.data.userId);
+      allow get: if isSignedIn() && isOwner(resource.data.userId);
+      allow create: if isVerified()
+                     && isOwner(incoming().userId)
+                     && incoming().createdAt == request.time;
+      allow update: if isVerified() && isOwner(resource.data.userId)
+                     && isOwner(incoming().userId)
+                     && incoming().updatedAt == request.time;
+      allow delete: if isVerified() && isOwner(resource.data.userId);
+    }
+
+    match /brandVoices/{voiceId} {
+      allow list: if isSignedIn() && isOwner(resource.data.userId);
+      allow get: if isSignedIn() && isOwner(resource.data.userId);
+      allow create: if isVerified() && isValidBrandVoice(incoming())
+                     && incoming().keys().hasAll(['userId', 'name', 'tone', 'audience', 'style', 'createdAt'])
+                     && incoming().keys().size() == 6;
+      allow update: if isVerified() && isOwner(resource.data.userId)
+                     && isOwner(incoming().userId)
+                     && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'tone', 'audience', 'style']);
+      allow delete: if isVerified() && isOwner(resource.data.userId);
+    }
+
+    match /wpConnections/{connectionId} {
+      allow list: if isSignedIn() && isOwner(resource.data.userId);
+      allow get: if isSignedIn() && isOwner(resource.data.userId);
+      allow create: if isVerified()
+                     && isOwner(incoming().userId)
+                     && incoming().keys().hasAll(['userId', 'siteUrl', 'username', 'appPassword', 'createdAt'])
+                     && incoming().keys().size() == 5;
+      allow update: if isVerified() && isOwner(resource.data.userId)
+                     && isOwner(incoming().userId)
+                     && incoming().diff(existing()).affectedKeys().hasOnly(['siteUrl', 'username', 'appPassword']);
+      allow delete: if isVerified() && isOwner(resource.data.userId);
+    }
+
+    match /blogs/{blogId} {
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() 
+                     && isValidId(blogId)
+                     && isValidBlog(incoming())
+                     && incoming().keys().hasAll(['userId', 'title', 'content', 'createdAt'])
+                     && incoming().keys().size() == 4;
+      
+      allow update, delete: if false;
+    }
+
+    match /gemini_keys/{keyId} {
+      allow list, get: if isSignedIn();
+      allow update: if isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['isWorking', 'status']);
+      allow create, delete: if false; // Managed by Admin/Hub
+    }
+
+    match /api_keys/{keyId} {
+      allow list, get: if isSignedIn();
+      allow update: if isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['isWorking', 'status']);
+      allow create, delete: if false; 
+    }
+
+    match /keys/{keyId} {
+      allow list, get: if isSignedIn();
+      allow update: if isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['isWorking', 'status']);
+      allow create, delete: if false;
+    }
+
+    // Test connection document
+    match /test/connection {
+      allow get: if true;
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Shared Auurio user profile with credits.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "credits": { "type": "integer" },
+        "activeChannel": { "type": "string", "description": "Last used platform mode" }
+      },
+      "required": ["uid", "email", "credits"]
+    },
+    "BrandVoice": {
+      "title": "Brand Voice",
+      "description": "Style and tone profile for AI generation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "tone": { "type": "string" },
+        "audience": { "type": "string" },
+        "style": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "tone", "audience"]
+    },
+    "SavedContent": {
+      "title": "Saved Content",
+      "description": "A saved article or draft in the content library.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "outline": { "type": "object", "description": "Structured outline JSON" },
+        "type": { "type": "string", "enum": ["blog", "linkedin", "medium", "social", "repurposed"] },
+        "status": { "type": "string", "enum": ["draft", "published", "archived"] },
+        "seoData": { "type": "object" },
+        "images": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "content", "status", "type"]
+    },
+    "WPConnection": {
+      "title": "WordPress Connection",
+      "description": "Encrypted credentials for WordPress publishing.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "siteUrl": { "type": "string" },
+        "username": { "type": "string" },
+        "appPassword": { "type": "string" }
+      },
+      "required": ["userId", "siteUrl", "username", "appPassword"]
+    },
+    "GeminiKey": {
+      "title": "Gemini API Key",
+      "description": "API keys for rotational load balancing.",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "exhausted", "invalid"] },
+        "isWorking": { "type": "boolean" },
+        "label": { "type": "string" },
+        "usage": { "type": "integer" }
+      },
+      "required": ["key"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Standard users collection."
+    },
+    "/brandVoices/{voiceId}": {
+      "schema": "BrandVoice",
+      "description": "User custom brand identities."
+    },
+    "/library/{contentId}": {
+      "schema": "SavedContent",
+      "description": "User content library and drafts."
+    },
+    "/wpConnections/{userId}": {
+      "schema": "WPConnection",
+      "description": "WordPress site sync configurations."
+    },
+    "/gemini_keys/{keyId}": {
+      "schema": "GeminiKey",
+      "description": "Rotational pool of Gemini API keys."
+    },
+    "/api_keys/{keyId}": {
+      "schema": "GeminiKey",
+      "description": "Alternative key collection name."
+    },
+    "/keys/{keyId}": {
+      "schema": "GeminiKey",
+      "description": "Strict alternative key collection name."
+    }
+  }
+}
