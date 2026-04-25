@@ -39,10 +39,9 @@ export default function IdeaLab({ onSelectTopic }: { onSelectTopic: (topic: stri
 
   const saveToLibrary = async (idea: Idea, index: number) => {
     if (!user) return;
-    const userIdentifier = user.email || user.uid;
     try {
       await addDoc(collection(db, 'library'), {
-        userId: userIdentifier,
+        userId: user.uid,
         title: idea.Title,
         content: `**Overview:** ${idea.BriefExplanation}\n\n**Tag:** ${idea.Tag}\n**Search Intent:** ${idea.SearchIntent}\n**Target Keyword:** ${idea.TargetKeyword}`,
         type: 'idea',

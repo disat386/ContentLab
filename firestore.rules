@@ -69,7 +69,7 @@ service cloud.firestore {
       
       allow update: if isVerified() && (request.auth.uid == userId || request.auth.token.email == userId)
                      && (
-                       (incoming().credits == existing().credits - 1 
+                       (incoming().credits < existing().credits 
                         && incoming().diff(existing()).affectedKeys().hasOnly(['credits']))
                        ||
                        (incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'activeChannel']))

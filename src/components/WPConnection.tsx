@@ -35,8 +35,7 @@ export default function WPConnection() {
   useEffect(() => {
     if (!user) return;
     const path = 'wpConnections';
-    const userIdentifier = user.email || user.uid;
-    const q = query(collection(db, path), where('userId', '==', userIdentifier));
+    const q = query(collection(db, path), where('userId', 'in', [user.uid, user.email || '']));
     const unsub = onSnapshot(q, (snap) => {
       setConnections(snap.docs.map(d => ({ id: d.id, ...d.data() } as WPConn)));
       setLoading(false);
@@ -59,10 +58,9 @@ export default function WPConnection() {
       }
 
       const path = 'wpConnections';
-      const userIdentifier = user?.email || user?.uid;
       try {
         await addDoc(collection(db, path), {
-          userId: userIdentifier,
+          userId: user!.uid,
           siteUrl: url.origin,
           username,
           appPassword, // Note: In a production app, this should ideally be encrypted or handled via a server proxy

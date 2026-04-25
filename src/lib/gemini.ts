@@ -1,94 +1,53 @@
 import { GoogleGenAI } from "@google/genai";
-import { collection, getDocs, query, where, updateDoc, doc } from 'firebase/firestore';
-import { db } from './firebase';
+import { doc, updateDoc, collection, getDocs } from "firebase/firestore";
+import { db } from "./firebase";
 
-interface GeminiKeyMetaData {
+export interface GeminiKeyMetaData {
   id: string;
   key: string;
-  status?: string;
-  isWorking?: boolean;
+  isCustom?: boolean;
 }
 
 let cachedKeys: GeminiKeyMetaData[] = [];
 const sessionExhaustedKeys: Set<string> = new Set();
-let currentKeyIndex = 0;
 let lastFetch = 0;
 const CACHE_TTL = 1000 * 60 * 5; // 5 minutes
 
 async function getGeminiKeys(): Promise<GeminiKeyMetaData[]> {
   const now = Date.now();
-  if (cachedKeys.length > 0 && (now - lastFetch) < CACHE_TTL) {
+  if (cachedKeys.length > 0 && now - lastFetch < CACHE_TTL) {
     return cachedKeys;
   }
 
-  const collectionsToTry = ['gemini_keys', 'api_keys', 'keys'];
-  let allFetchedKeys: (GeminiKeyMetaData & { collection?: string })[] = [];
-
-  try {
-    for (const collName of collectionsToTry) {
-      try {
-        const q = query(
-          collection(db, collName), 
-          where('isWorking', '!=', false)
-        );
-        const snap = await getDocs(q);
-        
-        const keys = snap.docs.map(d => ({
-          id: d.id,
-          collection: collName,
-          ...d.data()
-        })) as (GeminiKeyMetaData & { collection: string })[];
-        
-        allFetchedKeys = [...allFetchedKeys, ...keys];
-      } catch {
-        // Silently skip if collection doesn't exist or is inaccessible
-      }
-    }
-    
-    // Mix in the system key if available
-    if (process.env.GEMINI_API_KEY) {
-      if (!allFetchedKeys.find(k => k.key === process.env.GEMINI_API_KEY)) {
-        allFetchedKeys.push({ id: 'system-env', key: process.env.GEMINI_API_KEY!, isWorking: true });
-      }
-    }
-
-    cachedKeys = allFetchedKeys;
-    lastFetch = now;
-    return cachedKeys;
-  } catch (error) {
-    console.error("Error fetching Gemini keys from Firestore:", error);
-    return process.env.GEMINI_API_KEY ? [{ id: 'system-env', key: process.env.GEMINI_API_KEY, isWorking: true }] : [];
-  }
-}
-
-async function getAIInstance(): Promise<{ ai: GoogleGenAI; meta: GeminiKeyMetaData }> {
-  const allKeys = await getGeminiKeys();
+  const keys: GeminiKeyMetaData[] = [];
   
-  // Filter out keys already known to be exhausted in this session
-  const availableKeys = allKeys.filter(k => !sessionExhaustedKeys.has(k.id));
-
-  if (availableKeys.length === 0) {
-    throw new Error("SYSTEM_EXHAUSTED: All available Gemini API keys in the Hub pool have reached their rate limits. Please try again in 1-2 minutes or use your own API key.");
+  // Add environment key if available
+  const envKey = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' ? (process as unknown as { env: Record<string, string> }).env?.GEMINI_API_KEY : undefined);
+  if (envKey) {
+    keys.push({ id: 'env-primary', key: envKey, isCustom: true });
   }
 
-  // Pick the next one (wrapped by modulo)
-  const nextMeta = availableKeys[currentKeyIndex % availableKeys.length];
-  currentKeyIndex = (currentKeyIndex + 1) % availableKeys.length;
+  try {
+    const keysColl = collection(db, "geminiKeys");
+    const snapshot = await getDocs(keysColl);
+    const firestoreKeys = snapshot.docs
+      .map(d => ({ id: d.id, ...d.data() } as GeminiKeyMetaData))
+      .filter(k => k.key);
+    
+    keys.push(...firestoreKeys);
+  } catch (error) {
+    console.warn("Firestore Gemini keys fetch failed, using environment key only if available.", error);
+  }
 
-  return {
-    ai: new GoogleGenAI({ apiKey: nextMeta.key }),
-    meta: nextMeta
-  };
+  cachedKeys = keys;
+  lastFetch = now;
+  return keys;
 }
 
-async function markKeyAsInvalid(keyMeta: GeminiKeyMetaData & { collection?: string }) {
-  if (keyMeta.id === 'system-env') return;
+async function markKeyInvalid(keyMeta: GeminiKeyMetaData) {
+  if (keyMeta.isCustom) return;
   try {
-    const collName = keyMeta.collection || 'gemini_keys';
-    const keyRef = doc(db, collName, keyMeta.id);
-    await updateDoc(keyRef, { isWorking: false, status: 'invalid' });
-    console.warn(`Marked key ${keyMeta.id} from ${collName} as invalid in Firestore.`);
-    // Refresh cache
+    await updateDoc(doc(db, "geminiKeys", keyMeta.id), { isActive: false, invalidReason: 'API_KEY_INVALID' });
     lastFetch = 0;
   } catch (e) {
     console.error("Failed to mark key as invalid:", e);
@@ -101,284 +60,211 @@ export interface ContentRequest {
   tone: string;
   goal?: string;
   keywords?: string[];
+  externalLinks?: string;
+  autoExternalLinks?: boolean;
   length?: 'short' | 'medium' | 'long' | string;
   outline?: unknown;
   brandVoice?: unknown;
+  template?: string;
 }
 
-// Centralized Error Handler
-function handleGeminiError(error: unknown, context: string) {
-  console.error(`${context} Error:`, error);
-  
-  const err = error as { status?: number; message?: string };
-  
-  if (err?.message?.includes('SYSTEM_EXHAUSTED')) {
-    throw new Error(err.message);
-  }
-
-  // Handle Quota/Rate Limit Errors
-  if (err?.status === 429 || err?.message?.includes('RESOURCE_EXHAUSTED')) {
-    throw new Error("AI Quota Exceeded: Your plan's rate limit has been reached. Please wait 60 seconds or check your Gemini API billing settings in Google AI Studio.");
-  }
-  
-  // Handle other known issues
-  if (err?.message?.includes('API_KEY_INVALID')) {
-    throw new Error("Invalid API Key: Please check your Gemini API key in the app settings.");
-  }
-
-  throw error;
-}
-
-// Wrapper for rotation logic (formerly withRetry)
 async function executeWithRotation<T>(fn: (ai: GoogleGenAI) => Promise<T>, context: string): Promise<T> {
-  let lastError: unknown;
+  const maxRetries = 5; // Increased retries
   const allKeys = await getGeminiKeys();
-  const maxRetries = Math.max(allKeys.length, 2);
-
+  
   for (let i = 0; i < maxRetries; i++) {
-    let currentMeta: GeminiKeyMetaData | null = null;
+    const availableKeys = allKeys.filter(k => !sessionExhaustedKeys.has(k.id));
+    if (availableKeys.length === 0) {
+      throw new Error("SYSTEM_EXHAUSTED: All available Gemini API keys have reached their rate limits.");
+    }
+
+    // Try a random available key to distribute load
+    const nextMeta = availableKeys[Math.floor(Math.random() * availableKeys.length)];
+
     try {
-      const { ai, meta } = await getAIInstance();
-      currentMeta = meta;
+      const ai = new GoogleGenAI({ apiKey: nextMeta.key });
       return await fn(ai);
     } catch (error) {
-      lastError = error;
-      const err = error as { status?: number; message?: string };
+      const err = error as { status?: number; code?: number; message?: string };
+      console.error(`Gemini Error [${context}] with key ${nextMeta.id}:`, err?.message || err);
+
+      const status = err?.status || err?.code || 0;
+      const message = (err?.message || "").toUpperCase();
+
+      if (status === 403 || message.includes('API_KEY_INVALID')) {
+        if (!nextMeta.isCustom) await markKeyInvalid(nextMeta);
+      }
       
-      // If it's a System Exhausted error, just stop
-      if (err?.message?.includes('SYSTEM_EXHAUSTED')) {
-        break;
+      const isQuota = status === 429 || message.includes('RESOURCE_EXHAUSTED') || message.includes('QUOTA');
+      if (isQuota) {
+        sessionExhaustedKeys.add(nextMeta.id);
       }
 
-      // Handle Invalid Key (403 or specific message)
-      if (err?.status === 403 || err?.message?.includes('API_KEY_INVALID')) {
-        if (currentMeta) {
-          await markKeyAsInvalid(currentMeta);
-        }
+      // If it's a structural error (400), don't bother retrying with other keys
+      if (status === 400) {
+        throw new Error(`AI_STRUCTURAL_ERROR: ${err.message}`, { cause: error });
       }
 
-      const isQuota = err?.status === 429 || err?.message?.includes('RESOURCE_EXHAUSTED');
-      
-      if (isQuota && currentMeta) {
-        // Mark as exhausted in session
-        sessionExhaustedKeys.add(currentMeta.id);
-        console.warn(`${context}: Key ${currentMeta.id} reached quota. Added to session exclusion. Pool size remaining: ${allKeys.length - sessionExhaustedKeys.size}`);
-      }
-
-      if (!isQuota && !(err?.status === 403)) break; // Only retry on quota or invalid key errors
-      
-      console.warn(`${context}: Error on key rotation attempt ${i + 1}/${maxRetries}. Retrying with next available...`);
-      // Short delay before retry
-      await new Promise(resolve => setTimeout(resolve, 300));
+      // Wait a bit before next rotation
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
-  
-  handleGeminiError(lastError, context);
-  throw lastError; // unreachable
+  throw new Error(`${context} failed after multiple attempts. Please check your network or try again later.`);
 }
 
-// Export the service as requested
+function sanitizeJSON(text: string): string {
+  // Remove markdown code blocks if present
+  return text.replace(/```json/g, '').replace(/```/g, '').trim();
+}
+
 export const geminiKeyService = {
-  getKeys: getGeminiKeys,
-  execute: executeWithRotation,
-  markInvalid: markKeyAsInvalid
+  execute: executeWithRotation
 };
 
-// 1. Idea Generator
-export async function generateIdeas(niche: string, audience: string, goal: string) {
-  const prompt = `
-    You are ContentLab AI Idea Generator.
-    Niche: ${niche}
-    Target Audience: ${audience}
-    Goal: ${goal}
+// --- Specialized AI Features ---
 
-    Suggest 10 high-quality blog ideas.
-    For each idea, provide:
-    - Title
-    - Brief Explanation (1 sentence)
-    - Target Keyword
-    - Search Intent (Informational, Navigational, Transactional, Commercial)
-    - Content Score (1-100)
-    - Tag: (Evergreen, Trending, Viral, SEO)
-
-    Format as a JSON array of objects.
-  `;
+export async function generateIdeas(topic: string, audience: string = 'General', goal: string = 'Traffic') {
+  const prompt = `Generate 5 creative blog post ideas for: "${topic}". 
+  Audience: ${audience}, Goal: ${goal}.
+  Return as a JSON array of objects with { Title, BriefExplanation, Tag, SearchIntent, TargetKeyword }.`;
 
   return executeWithRotation(async (ai) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { responseMimeType: "application/json" }
     });
-    return JSON.parse(response.text);
+    const text = response.text || '';
+    return JSON.parse(sanitizeJSON(text));
   }, "Idea Generation");
 }
 
-// 2. Smart Outline Generator
 export async function generateOutline(request: ContentRequest) {
-  const prompt = `
-    Create a detailed SEO-friendly blog outline for: "${request.topic}".
-    Audience: ${request.audience}
-    Target Keywords: ${request.keywords?.join(', ')}
-    Length: ${request.length}
-
-    Include:
-    - Optimized Title (H1)
-    - Intro points
-    - Headings (H2, H3) with short descriptions
-    - FAQ titles
-    - Suggested CTAs
-    - Conclusion plan
-
-    Format as a JSON object.
-  `;
+  const prompt = `Create a logical outline for: "${request.topic}". 
+  Audience: ${request.audience}, Length: ${request.length}, Template: ${request.template || 'None'}.
+  ${request.externalLinks ? `References/Links to include: ${request.externalLinks}` : ''}
+  Return strictly JSON { Title, Headings: [{title, description}] }.`;
 
   return executeWithRotation(async (ai) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { responseMimeType: "application/json" }
     });
-    return JSON.parse(response.text);
+    const text = response.text || '';
+    return JSON.parse(sanitizeJSON(text));
   }, "Outline Generation");
 }
 
-// 3. Full Content Writer
 export async function generateFullContent(request: ContentRequest) {
-  const prompt = `
-    Write a complete article based on this ${request.outline ? 'outline' : 'topic'}: "${request.topic}".
-    Outline: ${request.outline ? JSON.stringify(request.outline) : 'None'}
-    Audience: ${request.audience}
-    Tone: ${request.tone}
-    Keywords: ${request.keywords?.join(', ')}
-    Length: ${request.length}
-    Brand Voice: ${request.brandVoice ? JSON.stringify(request.brandVoice) : 'Default'}
-
-    Ensure the content is engaging, authoritative, and follows SEO best practices.
-    Include Markdown formatting, subheadings, lists, and a strong conclusion.
-  `;
+  const prompt = `Write a comprehensive, professional, and HIGHLY UNIQUE blog post about: ${request.topic}.
+  TONE: ${request.tone}
+  AUDIENCE: ${request.audience}
+  KEYWORDS: ${request.keywords?.join(', ')}
+  
+  QUALITY CONSTRAINTS:
+  - DO NOT use generic AI filler or clichés (e.g., "In the fast-paced world of...", "Crucial role").
+  - Provide specific examples, data-driven insights (even if general), and unique angles not found in standard search results.
+  - Ensure the content passes "human-writer" sniff tests for creativity and flow.
+  - ${request.externalLinks ? `Naturally weave in these specific references: ${request.externalLinks}` : ''}
+  ${request.autoExternalLinks ? `Actively link to authoritative external sources (Citations).` : 'Include external resources.'}
+  
+  OUTLINE: ${JSON.stringify(request.outline)}
+  
+  FORMATTING:
+  - Compelling H1 Title
+  - Structured H2/H3 sections
+  - Engaging intro and transformative conclusion
+  - Use Bullet points, bold keywords, and professional spacing.
+  - USE MARKDOWN.`;
 
   return executeWithRotation(async (ai) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
-    return response.text;
+    return response.text || '';
   }, "Content Writing");
 }
 
-// 4. SEO Optimizer & Metadata
 export async function optimizeSEO(content: string, keywords: string[]) {
-  const prompt = `
-    Analyze this article and provide SEO optimization data:
-    Article: ${content.substring(0, 5000)}
-    Target Keywords: ${keywords.join(', ')}
-
-    Return a JSON object with:
-    - seoScore (0-100)
-    - metaTitle
-    - metaDescription (max 160 chars)
-    - urlSlug
-    - suggestedChanges (array of strings)
-    - readabilityGrade
-    - keywordDensity (object)
-  `;
+  const prompt = `Analyze this article for SEO. Keywords: ${keywords.join(', ')}.
+    Return JSON { seoScore, metaTitle, metaDescription, urlSlug, suggestedChanges: [{field, suggestion, advice}], readabilityGrade, keywordDensity: {} }.
+    Article: ${content.substring(0, 3000)}`;
 
   return executeWithRotation(async (ai) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { responseMimeType: "application/json" }
     });
-    return JSON.parse(response.text);
+    const text = response.text || '';
+    return JSON.parse(sanitizeJSON(text));
   }, "SEO Optimization");
 }
 
-// 5. Repurposer
-export async function repurposeContent(content: string, targetPlatform: string, brandVoice?: unknown) {
-  const prompt = `
-    Repurpose the following content for ${targetPlatform}.
-    Brand Voice: ${brandVoice ? JSON.stringify(brandVoice) : 'Default Professional'}
-    Content: ${content.substring(0, 5000)}
-
-    Goal: Convert into a high-engagement, platform-specific post.
-    LinkedIn: Professional, insight-driven, with hooks.
-    Twitter/X: Thread format with hooks and hashtags.
-    Social: Short, viral-style caption.
-    Newsletter: Personal, value-driven summary.
-  `;
+export async function generateImagePrompts(contentOrTopic: string, description?: string) {
+  const content = description ? `${contentOrTopic}: ${description}` : contentOrTopic;
+  const prompt = `Based on the following article content, generate 5 distinct, SHORT, and highly descriptive image prompts (max 15 words each). 
+  Focus on identifying the visual essence for different sections. Use keywords like cinematic, photorealistic, 8k, professional lighting.
+  Return strictly JSON { "prompts": ["prompt1", "prompt2", ...] }.
+  
+  Content: ${content.substring(0, 1500)}`;
 
   return executeWithRotation(async (ai) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { responseMimeType: "application/json" }
     });
-    return response.text;
+    const text = response.text || '';
+    const parsed = JSON.parse(sanitizeJSON(text));
+    return parsed.prompts || [];
+  }, "Image Prompt Generation");
+}
+
+export async function repurposeContent(content: string, targetPlatform: string, brandVoice?: unknown) {
+  const prompt = `Repurpose for ${targetPlatform}: ${content.substring(0, 4000)}.
+  Voice: ${JSON.stringify(brandVoice)}`;
+
+  return executeWithRotation(async (ai) => {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    });
+    return response.text || '';
   }, "Repurposing");
 }
 
-// 6. Advanced Specialized Tools
+export async function summarizeContent(content: string) {
+  const prompt = `Summarize the following content into 3-5 concise, high-impact key takeaways. 
+  Focus on the most valuable insights for the reader. 
+  Return as a clean Markdown bulleted list.
+  Content: ${content.substring(0, 5000)}`;
+
+  return executeWithRotation(async (ai) => {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    });
+    return response.text || '';
+  }, "Summarization");
+}
+
 export type ToolId = 
   | 'HeadlineAnalyzer' | 'FAQGenerator' | 'NewsletterGen' | 'ProductDesc' 
-  | 'MetaTags' | 'IntroGen' | 'Outlining' | 'Summarizer' 
+  | 'MetaTags' | 'IntroGen' | 'Outlining' | 'Summarizer'
   | 'GrammarFix' | 'ContentGap' | 'AuthorityMap' | 'QuoraAnswer' 
-  | 'VideoScript' | 'CaseStudy' | 'WhitepaperBody';
+  | 'VideoScript' | 'CaseStudy' | 'WhitepaperBody' | 'ExplainerGen';
 
-export async function runSpecializedTool(type: ToolId, input: string, context?: { audience?: string; keywords?: string[] }) {
-  const prompts: Record<ToolId, string> = {
-    HeadlineAnalyzer: `Analyze the following headlines for click-through rate, sentiment, and power words. Provide 5 improved alternatives. Input: ${input}`,
-    FAQGenerator: `Generate 10 frequently asked questions and short, authoritative answers based on this content: ${input}`,
-    NewsletterGen: `Transform this article into a punchy, high-conversion email newsletter for a list. Include a subject line and CTA. Content: ${input}`,
-    ProductDesc: `Write a compelling Benefit-First product description for: ${input}. Target Audience: ${context?.audience || 'General'}`,
-    MetaTags: `Generate SEO Meta Title (max 60 chars) and Meta Description (max 160 chars) for this topic: ${input}. Keywords: ${context?.keywords || 'None'}`,
-    IntroGen: `Write 3 different hook styles (The Question, The Statistic, The Story) for a blog post about: ${input}`,
-    Outlining: `Create a comprehensive, logical content outline for a long-form article about: ${input}`,
-    Summarizer: `Summarize this content into 3 bullet points of "Executive Significance": ${input}`,
-    GrammarFix: `Proofread and improve the flow and authority of this text without changing the core message: ${input}`,
-    ContentGap: `Analyze this topic: ${input}. Identify 5 missing sub-topics or unique angles not commonly covered by competitors.`,
-    AuthorityMap: `Create a "Topic Cluster" map for: ${input}. List a Pillar post and 8 sub-topics for internal linking.`,
-    QuoraAnswer: `Write a helpful, authoritative Quora-style answer that naturally mentions the expertise on: ${input}`,
-    VideoScript: `Convert this content into a 2-minute YouTube/TikTok script. Include visual cues. Content: ${input}`,
-    CaseStudy: `Structure a compelling Case Study (Problem, Solution, Results) template for: ${input}`,
-    WhitepaperBody: `Generate a professional, data-driven section for an industry whitepaper regarding: ${input}`
-  };
+export async function runSpecializedTool(type: ToolId, input: string) {
+  const prompt = `Execute tool ${type} on input: ${input}`;
 
   return executeWithRotation(async (ai) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompts[type],
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
     });
-    return response.text;
+    return response.text || '';
   }, "Tool Execution");
 }
-
-// 7. Image Prompt Generator
-export async function generateImagePrompts(topic: string, description: string) {
-  const prompt = `
-    Generate 3 distinct image generation prompts for a blog post about: "${topic}".
-    Context: ${description}
-    Format:
-    1. Featured Header (Photorealistic/Modern/Minimalist)
-    2. Infographic Style
-    3. Conceptual/Abstract
-    Return only the prompts.
-  `;
-
-  return executeWithRotation(async (ai) => {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-    });
-    return response.text;
-  }, "Image Prompt");
-}
-
-// Legacy functions for compatibility (if needed)
-export async function generateBlogPost(request: ContentRequest) {
-  return generateFullContent({ ...request });
-}
-
-export async function curateTopics(interest: string) {
-  return generateIdeas(interest, "General", "Education");
-}
-

@@ -32,8 +32,7 @@ export default function BrandVoiceManager() {
   React.useEffect(() => {
     if (!user) return;
     const path = 'brandVoices';
-    const userIdentifier = user.email || user.uid;
-    const q = query(collection(db, path), where('userId', '==', userIdentifier));
+    const q = query(collection(db, path), where('userId', 'in', [user.uid, user.email || '']));
     const unsub = onSnapshot(q, (snap) => {
       setVoices(snap.docs.map(d => ({ id: d.id, ...d.data() } as VoiceData)));
     }, (error) => {
@@ -45,10 +44,9 @@ export default function BrandVoiceManager() {
   const handleSave = async () => {
     if (!user || !newName) return;
     const path = 'brandVoices';
-    const userIdentifier = user.email || user.uid;
     try {
       await addDoc(collection(db, path), {
-        userId: userIdentifier,
+        userId: user.uid,
         name: newName,
         tone: newTone,
         audience: newAudience,

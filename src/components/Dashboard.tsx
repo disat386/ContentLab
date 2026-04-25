@@ -10,7 +10,9 @@ import {
   Star,
   Plus,
   Zap,
-  Wrench
+  Wrench,
+  Globe,
+  Layers
 } from 'lucide-react';
 import IdeaLab from './IdeaLab';
 import BlogWriter from './BlogWriter';
@@ -18,8 +20,10 @@ import Repurposer from './Repurposer';
 import Library from './Library';
 import BrandVoiceManager from './BrandVoiceManager';
 import ToolsHub from './ToolsHub';
+import WPConnection from './WPConnection';
+import BulkWriter from './BulkWriter';
 
-type Tab = 'idea' | 'writer' | 'repurpose' | 'library' | 'voice' | 'tools';
+type Tab = 'idea' | 'writer' | 'bulk' | 'repurpose' | 'library' | 'voice' | 'tools' | 'wordpress';
 
 export default function Dashboard() {
   const { profile } = useAuth();
@@ -48,6 +52,12 @@ export default function Dashboard() {
           label="AI Writer" 
         />
         <TabButton 
+          active={activeTab === 'bulk'} 
+          onClick={() => setActiveTab('bulk')} 
+          icon={<Layers className="w-4 h-4" />} 
+          label="Bulk Writer" 
+        />
+        <TabButton 
           active={activeTab === 'repurpose'} 
           onClick={() => setActiveTab('repurpose')} 
           icon={<Share2 className="w-4 h-4" />} 
@@ -72,6 +82,12 @@ export default function Dashboard() {
           icon={<User className="w-4 h-4" />} 
           label="Brand Voice" 
         />
+        <TabButton 
+          active={activeTab === 'wordpress'} 
+          onClick={() => setActiveTab('wordpress')} 
+          icon={<Globe className="w-4 h-4" />} 
+          label="WordPress" 
+        />
         <div className="w-[1px] h-6 bg-white/10 mx-2" />
         <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-auurio-yellow/10 border border-auurio-yellow/20">
           <Zap className="w-4 h-4 text-auurio-yellow" />
@@ -92,6 +108,11 @@ export default function Dashboard() {
               <BlogWriter initialTopic={selectedTopic || undefined} />
             </motion.div>
           )}
+          {activeTab === 'bulk' && (
+            <motion.div key="bulk" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <BulkWriter />
+            </motion.div>
+          )}
           {activeTab === 'repurpose' && (
             <motion.div key="repurpose" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               <Repurposer />
@@ -110,6 +131,11 @@ export default function Dashboard() {
           {activeTab === 'tools' && (
             <motion.div key="tools" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               <ToolsHub />
+            </motion.div>
+          )}
+          {activeTab === 'wordpress' && (
+            <motion.div key="wordpress" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-2xl mx-auto py-8">
+              <WPConnection />
             </motion.div>
           )}
         </AnimatePresence>

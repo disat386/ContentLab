@@ -41,7 +41,7 @@ export default function Repurposer() {
   useEffect(() => {
     if (!user) return;
     const path = 'brandVoices';
-    const unsub = onSnapshot(query(collection(db, path), where('userId', '==', user.email || user.uid)), (snap) => {
+    const unsub = onSnapshot(query(collection(db, path), where('userId', 'in', [user.uid, user.email || ''])), (snap) => {
       setVoices(snap.docs.map(d => ({ id: d.id, ...d.data() } as Voice)));
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, path);
@@ -59,10 +59,9 @@ export default function Repurposer() {
       
       // Save repurposed content to library
       const libraryPath = 'library';
-      const userIdentifier = user?.email || user?.uid;
       try {
         await addDoc(collection(db, libraryPath), {
-          userId: userIdentifier,
+          userId: user!.uid,
           title: `Repurposed for ${platform}`,
           content: result,
           type: 'repurposed',
@@ -86,7 +85,7 @@ export default function Repurposer() {
     setLoading(prev => ({ ...prev, images: true }));
     try {
       const result = await generateImagePrompts("Article Visuals", sourceContent.substring(0, 1000));
-      setImagePrompts(result);
+      setImagePrompts(result.join('\n\n'));
     } catch (err) {
       console.error(err);
     } finally {

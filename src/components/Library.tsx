@@ -72,10 +72,9 @@ export default function Library() {
   useEffect(() => {
     if (!user) return;
     const path = 'library';
-    const userIdentifier = user.email || user.uid;
     const q = query(
       collection(db, path), 
-      where('userId', '==', userIdentifier),
+      where('userId', 'in', [user.uid, user.email || '']),
       orderBy('createdAt', 'desc')
     );
     const unsub = onSnapshot(q, (snap) => {
@@ -90,8 +89,7 @@ export default function Library() {
   useEffect(() => {
     if (!user) return;
     const path = 'wpConnections';
-    const userIdentifier = user.email || user.uid;
-    const unsub = onSnapshot(query(collection(db, path), where('userId', '==', userIdentifier)), (snap) => {
+    const unsub = onSnapshot(query(collection(db, path), where('userId', 'in', [user.uid, user.email || ''])), (snap) => {
       setWpConnections(snap.docs.map(d => ({ id: d.id, ...d.data() } as WPConnection)));
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, path);

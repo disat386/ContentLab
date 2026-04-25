@@ -18,7 +18,8 @@ import {
   Loader2,
   Copy,
   Check,
-  Download
+  Download,
+  Layers
 } from 'lucide-react';
 import { runSpecializedTool, ToolId } from '../lib/gemini';
 import { motion } from 'motion/react';
@@ -52,6 +53,7 @@ const TOOLS: ToolSchema[] = [
   { id: 'VideoScript', name: 'Script Assistant', description: 'Text to Video scripts.', icon: <Video className="w-5 h-5" />, placeholder: 'Paste article for script...' },
   { id: 'CaseStudy', name: 'Case Study Architect', description: 'P-S-R structure template.', icon: <BookOpen className="w-5 h-5" />, placeholder: 'Enter client results/data...' },
   { id: 'WhitepaperBody', name: 'Whitepaper Engine', description: 'High-level industry data.', icon: <FileCode className="w-5 h-5" />, placeholder: 'Enter technical theme...' },
+  { id: 'ExplainerGen', name: 'Bulk Production', description: 'Cluster-based article factory.', icon: <Layers className="w-5 h-5" />, placeholder: 'Access via Bulk Writer tab for full features.' },
 ];
 
 export default function ToolsHub() {
@@ -69,9 +71,8 @@ export default function ToolsHub() {
     setError(null);
     try {
       // Deduct credit
-      const userIdentifier = user.email || user.uid;
       try {
-        await updateDoc(doc(db, 'users', userIdentifier), { credits: increment(-1) });
+        await updateDoc(doc(db, 'users', user.uid), { credits: increment(-1) });
       } catch (err) {
         console.warn("Credit deduction failed:", err);
       }
@@ -83,7 +84,7 @@ export default function ToolsHub() {
       const libraryPath = 'library';
       try {
         await addDoc(collection(db, libraryPath), {
-          userId: userIdentifier,
+          userId: user.uid,
           title: `Tool: ${selectedTool.name}`,
           content: res,
           type: 'tool-output',

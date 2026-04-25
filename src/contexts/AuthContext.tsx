@@ -34,48 +34,67 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [popupBlocked, setPopupBlocked] = useState(false);
 
   useEffect(() => {
+    let unsubProfile: (() => void) | null = null;
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
-      if (currentUser && currentUser.email) {
-        // Setup realtime profile sync - Using email as key per Hub requirements
-        const profileRef = doc(db, 'users', currentUser.email);
+      
+      // Cleanup previous profile subscription if any
+      if (unsubProfile) {
+        unsubProfile();
+        unsubProfile = null;
+      }
+
+      if (currentUser) {
+        // Auurio Hub standard: uses UID as document ID for users
+        const profileRef = doc(db, 'users', currentUser.uid);
         
-        const unsubProfile = onSnapshot(profileRef, async (snapshot) => {
+        unsubProfile = onSnapshot(profileRef, async (snapshot) => {
           if (snapshot.exists()) {
             setProfile(snapshot.data() as UserProfile);
+            setLoading(false);
           } else {
-            // Initialize user profile if it doesn't exist
-            const initialProfile = {
-              uid: currentUser.uid,
-              email: currentUser.email || '',
-              displayName: currentUser.displayName || 'User',
-              credits: 10, // Starter credits
-            };
-            const path = 'users/' + (currentUser.email || currentUser.uid);
-            try {
-              await setDoc(profileRef, initialProfile);
-              setProfile(initialProfile);
-            } catch (err) {
-              handleFirestoreError(err, OperationType.WRITE, path);
+            // Attempt to check if email-based profile exists (migration fallback)
+            let existingProfile: UserProfile | null = null;
+            if (currentUser.email) {
+              const emailRef = doc(db, 'users', currentUser.email);
+              const emailSnap = await getDoc(emailRef);
+              if (emailSnap.exists()) {
+                existingProfile = emailSnap.data() as UserProfile;
+              }
             }
+
+            if (existingProfile) {
+              setProfile(existingProfile);
+              // Optional: Migrate to UID-based doc here if needed
+            } else {
+              // Initialize user profile if it doesn't exist
+              const initialProfile = {
+                uid: currentUser.uid,
+                email: currentUser.email || '',
+                displayName: currentUser.displayName || 'User',
+                credits: 10,
+              };
+              try {
+                await setDoc(profileRef, initialProfile);
+                setProfile(initialProfile);
+              } catch (err) {
+                console.error("Error creating profile:", err);
+              }
+            }
+            setLoading(false);
           }
-          setLoading(false);
         }, (error) => {
-          handleFirestoreError(error, OperationType.GET, 'users/' + (currentUser.email || currentUser.uid));
+          console.error("Profile sync error:", error);
           setLoading(false);
         });
-
-        return () => unsubProfile();
-      } else if (currentUser && !currentUser.email) {
-        // Fallback for anonymous users without email
-        setLoading(false);
       } else {
         setProfile(null);
         setLoading(false);
       }
     });
 
-    // SSO Check (CRITICAL requirement)
+    // SSO Check
     const handleSSO = async () => {
       const params = new URLSearchParams(window.location.search);
       const isSSO = params.get('sso') === 'true';
@@ -95,7 +114,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     handleSSO();
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (unsubProfile) unsubProfile();
+    };
   }, []);
 
   const signIn = async (emailHint?: string) => {
